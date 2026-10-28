@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+#
+# ghsb — isolated, disposable gh CLI + git sandboxes for any GitHub account.
+#
+# Each sandbox is a self-contained folder under ~/.gh-sandboxes/<name>/ holding
+# just a token + commit identity. Nothing touches your global `gh` login, your
+# global git config, or the OS keyring — so you can run as many accounts as you
+# like on any device and delete one anytime with a single command.
+#
+# Requires: bash, gh, git (Git >= 2.31 for GIT_CONFIG_* env support).
+
+set -euo pipefail
+
+ROOT="${GH_SANDBOX_HOME:-$HOME/.gh-sandboxes}"
+SELF="$(basename "$0")"
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+die()  { printf '%s: %s\n' "$SELF" "$*" >&2; exit 1; }
+info() { printf '%s\n' "$*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed."; }
+
+sb_dir()     { valid_name "$1" || die "invalid sandbox name '$1'"; printf '%s/%s' "$ROOT" "$1"; }
+sb_exists()  { [ -d "$(sb_dir "$1")" ]; }
+require_sb() { sb_exists "$1" || die "no sandbox named '$1' (run: $SELF list)"; }
+valid_name() { case "$1" in ''|.|..|-*|*[!A-Za-z0-9._-]*) return 1;; *) return 0;; esac; }
+
+read_meta() { cat "$(sb_dir "$1")/$2" 2>/dev/null || true; }
+
+# Export the full sandbox environment into the current shell/process.
+# Sets gh auth (GH_TOKEN/GH_CONFIG_DIR/GH_HOST) and git auth+identity
+# (credential helper via GIT_CONFIG_*, author/committer via GIT_*).
+activate_env() {
+  local name="$1" dir host login token gname gemail helper
+  dir="$(sb_dir "$name")"
+  token="$(cat "$dir/token")"
+  host="$(read_meta "$name" host)";       host="${host:-github.com}"
+  login="$(read_meta "$name" login)"
+  gname="$(read_meta "$name" git-name)";  gname="${gname:-$login}"
+  gemail="$(read_meta "$name" git-email)"
+
+  # gh: token via env (no keyring, no login), config isolated to the sandbox.
+  export GH_CONFIG_DIR="$dir/config"
+  export GH_HOST="$host"
+  export GH_PROMPT_DISABLED=1
+  case "$host" in
+    github.com|*.ghe.com)
+      unset GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+      export GH_TOKEN="$token";;
+    *)
+      unset GH_TOKEN GITHUB_TOKEN
+      export GH_ENTERPRISE_TOKEN="$token";;
+  esac
+
+  # git: inject a per-host credential helper + identity purely via env vars,
+  # so no git config file (global or repo) is ever modified. The empty
+  # credential.helper first RESETS any inherited helpers (global config, OS
+  # keychain, `gh auth git-credential`, etc.) so the sandbox token is used —
+  # not whatever credential your machine has stored for the host.
+  export GHSB_TOKEN="$token"
+  helper='!f() { if [ "$1" = get ]; then printf "username=x-access-token\npassword=%s\n" "$GHSB_TOKEN"; fi; }; f'
+  export GIT_CONFIG_COUNT=2
+  export GIT_CONFIG_KEY_0="credential.helper"            GIT_CONFIG_VALUE_0=""
+  export GIT_CONFIG_KEY_1="credential.https://${host}.helper" GIT_CONFIG_VALUE_1="$helper"
+  export GIT_AUTHOR_NAME="$gname"    GIT_COMMITTER_NAME="$gname"
+  export GIT_AUTHOR_EMAIL="$gemail"  GIT_COMMITTER_EMAIL="$gemail"
+
+  export GHSB_ACTIVE="$name"
+}
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+cmd_create() {
+  need gh; need git
+  local name='' token='' token_stdin=0 host='github.com' login='' gname='' gemail='' verify=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --token)       token="$2"; shift 2;;
+      --token-stdin) token_stdin=1; shift;;
+      --host)        host="$2"; shift 2;;
+      --login)       login="$2"; shift 2;;
+      --name)        gname="$2"; shift 2;;
+      --email)       gemail="$2"; shift 2;;
+      --no-verify)   verify=0; shift;;
+      -*)            die "unknown flag: $1";;
+      *)             [ -z "$name" ] && name="$1" || die "unexpected argument: $1"; shift;;
+    esac
+  done
+  [ -n "$name" ] || die "usage: $SELF create <name> [--token-stdin] [--host H] [--name N] [--email E] [--login L]"
+  valid_name "$name" || die "invalid name '$name' (use letters, digits, . _ -)"
+  sb_exists "$name" && die "sandbox '$name' already exists (destroy it first)"
+
+  if [ "$token_stdin" -eq 1 ]; then
+    IFS= read -r token || true
+  elif [ -z "$token" ]; then
+    printf 'Personal access token for %s: ' "$host" >&2
+    IFS= read -rs token || true; printf '\n' >&2
+  fi
+  [ -n "$token" ] || die "no token provided"
+
+  local dir; dir="$(sb_dir "$name")"
+  umask 077
+  mkdir -p "$dir/config"; chmod 700 "$ROOT" "$dir" 2>/dev/null || true
+  printf '%s' "$token" > "$dir/token"; chmod 600 "$dir/token"
+  printf '%s' "$host" > "$dir/host"
+
+  # Verify the token and auto-detect identity from the account (gh has --jq built in).
+  if [ "$verify" -eq 1 ]; then
+    local resp dlogin did dname
+    if ! resp="$(GH_CONFIG_DIR="$dir/config" GH_HOST="$host" GH_TOKEN="$token" GH_ENTERPRISE_TOKEN="$token" \
+                 gh api user --jq '[.login, (.id|tostring), (.name // "")] | @tsv' 2>/dev/null)"; then
+      rm -rf "$dir"
+      die "token verification failed — check the token (or pass --no-verify --login <user> if offline)"
+    fi
+    IFS=$'\t' read -r dlogin did dname <<<"$resp"
+    [ -z "$login" ] && login="$dlogin"
+    [ -z "$gname" ] && gname="${dname:-$login}"
+    [ -z "$gemail" ] && gemail="${did}+${login}@users.noreply.github.com"
+  fi
+  [ -n "$login" ] || die "could not determine login; pass --login <user>"
+  [ -n "$gemail" ] || gemail="${login}@users.noreply.github.com"
+  [ -n "$gname" ] && printf '%s' "$gname" > "$dir/git-name"
+  [ -n "$gemail" ] && printf '%s' "$gemail" > "$dir/git-email"
+  printf '%s' "$login" > "$dir/login"
+
+  info "Created sandbox '$name'"
+  info "  account : $login @ $host"
+  info "  commits : ${gname:-$login} <${gemail:-unset}>"
+  info ""
+  info "Use it:   $SELF shell $name      # interactive subshell"
+  info "  or:     $SELF gh $name <args>  # one-off gh"
+  info "  or:     $SELF git $name <args> # one-off git"
+  info "Destroy:  $SELF destroy $name"
+}
+
+cmd_list() {
+  [ -d "$ROOT" ] || { info "no sandboxes yet."; return 0; }
+  local found=0 d name login host
+  for d in "$ROOT"/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"; found=1
+    login="$(read_meta "$name" login)"; host="$(read_meta "$name" host)"
+    printf '%-20s %s @ %s\n' "$name" "${login:-?}" "${host:-github.com}"
+  done
+  [ "$found" -eq 1 ] || info "no sandboxes yet."
+}
+
+cmd_status() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: $SELF status <name>"
+  require_sb "$name"; activate_env "$name"; need gh
+  gh auth status 2>&1 || true
+  printf 'api user: '; gh api user --jq '.login' 2>/dev/null || echo '(unreachable)'
+}
+
+cmd_env() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: eval \"\$($SELF env <name>)\""
+  require_sb "$name"; activate_env "$name"
+  info "# WARNING: this prints the token into your shell. Prefer '$SELF shell $name'."
+  local v
+  # gh + identity vars: skip the ones that are unset/empty.
+  for v in GH_CONFIG_DIR GH_HOST GH_TOKEN GH_ENTERPRISE_TOKEN GH_PROMPT_DISABLED GHSB_TOKEN \
+           GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GHSB_ACTIVE; do
+    [ -n "${!v:-}" ] && printf 'export %s=%q\n' "$v" "${!v}"
+  done
+  # git credential config: emit unconditionally — VALUE_0 is intentionally
+  # empty (it resets inherited helpers), so it must not be skipped.
+  for v in GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1; do
+    printf 'export %s=%q\n' "$v" "${!v:-}"
+  done
+}
+
+cmd_shell() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: $SELF shell <name>"
+  require_sb "$name"; activate_env "$name"
+  info "Entering '$name' ($(read_meta "$name" login)). gh and git now act as this account. Type 'exit' to leave."
+  exec "${SHELL:-/bin/bash}"
+}
+
+cmd_gh() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: $SELF gh <name> [args...]"
+  shift; require_sb "$name"; activate_env "$name"; need gh; exec gh "$@"
+}
+
+cmd_git() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: $SELF git <name> [args...]"
+  shift; require_sb "$name"; activate_env "$name"; need git; exec git "$@"
+}
+
+cmd_exec() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: $SELF exec <name> -- <cmd> [args...]"
+  shift; [ "${1:-}" = "--" ] && shift
+  require_sb "$name"; activate_env "$name"; [ $# -gt 0 ] || die "no command given"; exec "$@"
+}
+
+cmd_destroy() {
+  local name='' yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in --yes|-y) yes=1; shift;; -*) die "unknown flag: $1";; *) name="$1"; shift;; esac
+  done
+  [ -n "$name" ] || die "usage: $SELF destroy <name> [--yes]"
+  require_sb "$name"
+  if [ "$yes" -ne 1 ]; then
+    printf "Destroy sandbox '%s' (%s)? [y/N] " "$name" "$(read_meta "$name" login)" >&2
+    local ans; IFS= read -r ans || true; case "$ans" in y|Y|yes|YES) ;; *) die "aborted";; esac
+  fi
+  rm -rf -- "$(sb_dir "$name")"
+  info "Destroyed sandbox '$name'."
+}
+
+usage() {
+  cat >&2 <<EOF
+$SELF — disposable gh CLI + git sandboxes for any GitHub account.
+
+Usage:
+  $SELF create <name> [--token-stdin|--token <t>] [--host H] [--name N] [--email E] [--login L]
+  $SELF list
+  $SELF status  <name>
+  $SELF shell   <name>              # subshell where gh + git act as the account
+  $SELF gh      <name> [args...]    # one-off gh command
+  $SELF git     <name> [args...]    # one-off git command
+  $SELF exec    <name> -- <cmd...>  # run any command in the sandbox env
+  $SELF env     <name>              # print exports (use: eval "\$($SELF env <name>)")
+  $SELF destroy <name> [--yes]
+
+Sandboxes live in: ${ROOT}
+Nothing touches your global gh login, global git config, or the OS keyring.
+
+Examples:
+  printf '%s' ghp_xxx | $SELF create work --token-stdin
+  $SELF gh work repo create demo --private
+  $SELF git work -C ./demo push
+  $SELF shell work
+  $SELF destroy work
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# dispatch
+# ---------------------------------------------------------------------------
+cmd="${1:-help}"; [ $# -gt 0 ] && shift || true
+case "$cmd" in
+  create)              cmd_create "$@";;
+  list|ls)             cmd_list "$@";;
+  status|whoami)       cmd_status "$@";;
+  shell|sh|use)        cmd_shell "$@";;
+  gh)                  cmd_gh "$@";;
+  git)                 cmd_git "$@";;
+  exec|run)            cmd_exec "$@";;
+  env)                 cmd_env "$@";;
+  destroy|rm|delete)   cmd_destroy "$@";;
+  help|-h|--help)      usage;;
+  *)                   die "unknown command '$cmd' (run: $SELF help)";;
+esac
