@@ -16,7 +16,7 @@ case "$1 $2" in
     [ "$GIT_CONFIG_GLOBAL" = "$GH_SANDBOX_HOME/work/gitconfig" ]
     [ "$GIT_CONFIG_COUNT" = 0 ]
     [ "$GIT_CONFIG_NOSYSTEM" = 1 ]
-    [ "$(pwd)" = "$GH_SANDBOX_HOME/work" ]
+    [ "$(pwd -P)" = "$(cd "$GH_SANDBOX_HOME/work" && pwd -P)" ]
     [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}${GH_ENTERPRISE_TOKEN:-}${GITHUB_ENTERPRISE_TOKEN:-}" ]
     printf 'browser-token' > "$GH_CONFIG_DIR/mock-token"
     ;;
@@ -39,7 +39,7 @@ export PATH="$work/bin:$PATH"
 
 bash -n "$repo/ghsb"
 sh -n "$repo/install.sh"
-GH_TOKEN=outer GH_ENTERPRISE_TOKEN=outer "$repo/ghsb" create work >/dev/null 2>&1
+GH_TOKEN=outer GH_ENTERPRISE_TOKEN=outer "$repo/ghsb" create work >/dev/null
 [ "$(cat "$GH_SANDBOX_HOME/work/token")" = browser-token ]
 [ "$(cat "$GH_SANDBOX_HOME/work/login")" = testuser ]
 [ "$(cat "$GH_SANDBOX_HOME/work/git-email")" = '12345+testuser@users.noreply.github.com' ]
