@@ -16,7 +16,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - run: sh -x tests/smoke.sh
+      - run: sh tests/smoke.sh
 
   release:
     needs: smoke
