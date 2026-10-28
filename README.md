@@ -1,28 +1,33 @@
 # gh-sandbox
 
-`ghsb` runs GitHub CLI and Git with a named account, without changing your usual `gh` login or Git config. Each sandbox keeps a personal access token and commit identity in `~/.gh-sandboxes/<name>/`. `destroy` removes that folder.
+Use a separate GitHub account for `gh` and Git without changing your regular login. Each named sandbox lives in `~/.gh-sandboxes/`.
 
-## Install
+## Install (Linux or macOS)
 
-Requires Bash, [GitHub CLI](https://cli.github.com/), and Git 2.31 or newer. On macOS, use an up-to-date Git if the system version is older. Works in Bash or zsh on Linux and macOS.
+Requires Bash, [GitHub CLI](https://cli.github.com/), Git 2.31+, and curl.
 
 ```sh
-mkdir -p "$HOME/.local/bin"
-install -m 755 ghsb "$HOME/.local/bin/ghsb"
+curl -fsSL https://github.com/shravanngoswamii/gh-sandbox/releases/latest/download/install.sh | sh
 ```
 
-Add `$HOME/.local/bin` to your `PATH` if needed.
+This installs `ghsb` in `~/.local/bin`. If your shell cannot find it, add this line to `~/.bashrc` or `~/.zshrc`, then open a new terminal:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 ## Use
 
 ```sh
-ghsb create work                 # paste a GitHub personal access token at the hidden prompt
-ghsb gh work repo list          # run gh as that account
-ghsb git work -C my-repo push   # use that token for an HTTPS Git remote
-ghsb shell work                 # enter a shell where gh and git use the sandbox
-exit                            # leave the shell
-ghsb list                       # show sandboxes
-ghsb destroy work               # remove one (asks for confirmation)
+ghsb create work                 # opens GitHub browser login for this sandbox
+ghsb status work                 # check which account signed in
+ghsb gh work repo list          # run a gh command as that account
+ghsb git work -C my-repo push   # push an HTTPS remote as that account
+ghsb shell work                 # enter a shell where plain gh and git use it
+exit                            # return to your regular shell
+ghsb destroy work               # delete the sandbox and its credentials
 ```
 
-The token needs permission for the operations you run. For offline setup, use `ghsb create work --no-verify --login USER`. `ghsb help` lists all commands. Set `GH_SANDBOX_HOME` to use a different storage directory. Tokens are stored as files readable only by your user; avoid `ghsb env` unless you need its token-bearing output.
+`ghsb create` uses `gh auth login` with credentials kept inside the sandbox, not your regular `gh` login or OS keyring. For headless setup, pipe a token into `ghsb create work --token-stdin`. Run `ghsb help` for all commands. Set `GH_SANDBOX_HOME` to change where sandboxes are stored.
+
+To publish a new release, push a `v*` tag; the workflow checks Linux and macOS and uploads the installer and CLI as release assets.

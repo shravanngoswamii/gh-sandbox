@@ -3,7 +3,7 @@
 # ghsb — isolated, disposable gh CLI + git sandboxes for any GitHub account.
 #
 # Each sandbox is a self-contained folder under ~/.gh-sandboxes/<name>/ holding
-# just a token + commit identity. Nothing touches your global `gh` login, your
+# a token + commit identity. Nothing touches your global `gh` login, your
 # global git config, or the OS keyring — so you can run as many accounts as you
 # like on any device and delete one anytime with a single command.
 #
@@ -94,15 +94,33 @@ cmd_create() {
 
   if [ "$token_stdin" -eq 1 ]; then
     IFS= read -r token || true
-  elif [ -z "$token" ]; then
-    printf 'Personal access token for %s: ' "$host" >&2
-    IFS= read -rs token || true; printf '\n' >&2
+    [ -n "$token" ] || die "no token provided"
   fi
-  [ -n "$token" ] || die "no token provided"
+  [ -n "$token" ] || [ "$verify" -eq 1 ] || die "--no-verify requires --token-stdin or --token"
 
   local dir; dir="$(sb_dir "$name")"
   umask 077
   mkdir -p "$dir/config"; chmod 700 "$ROOT" "$dir" 2>/dev/null || true
+  if [ -z "$token" ]; then
+    info "Signing in to $host for sandbox '$name'..."
+    if ! (
+      unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_PROMPT_DISABLED
+      export GH_CONFIG_DIR="$dir/config" GH_HOST="$host"
+      export GIT_CONFIG_GLOBAL="$dir/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0
+      cd "$dir"
+      gh auth login --hostname "$host" --git-protocol https --web --insecure-storage --skip-ssh-key
+    ); then
+      rm -rf -- "$dir"
+      die "browser login failed"
+    fi
+    if ! token="$(
+      unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+      GH_CONFIG_DIR="$dir/config" GH_HOST="$host" gh auth token --hostname "$host"
+    )" || [ -z "$token" ]; then
+      rm -rf -- "$dir"
+      die "could not read the sandbox login token"
+    fi
+  fi
   printf '%s' "$token" > "$dir/token"; chmod 600 "$dir/token"
   printf '%s' "$host" > "$dir/host"
 
@@ -111,7 +129,7 @@ cmd_create() {
     local resp dlogin did dname
     if ! resp="$(GH_CONFIG_DIR="$dir/config" GH_HOST="$host" GH_TOKEN="$token" GH_ENTERPRISE_TOKEN="$token" \
                  gh api user --jq '[.login, (.id|tostring), (.name // "")] | @tsv' 2>/dev/null)"; then
-      rm -rf "$dir"
+      rm -rf -- "$dir"
       die "token verification failed — check the token (or pass --no-verify --login <user> if offline)"
     fi
     IFS=$'\t' read -r dlogin did dname <<<"$resp"
@@ -228,7 +246,8 @@ Sandboxes live in: ${ROOT}
 Nothing touches your global gh login, global git config, or the OS keyring.
 
 Examples:
-  printf '%s' ghp_xxx | $SELF create work --token-stdin
+  $SELF create work                  # browser login via gh auth login
+  $SELF status work
   $SELF gh work repo create demo --private
   $SELF git work -C ./demo push
   $SELF shell work
