@@ -30,4 +30,12 @@ ghsb destroy work               # delete the sandbox and its credentials
 
 `ghsb create` uses `gh auth login` with credentials kept inside the sandbox, not your regular `gh` login or OS keyring. For headless setup, pipe a token into `ghsb create work --token-stdin`. Run `ghsb help` for all commands. Set `GH_SANDBOX_HOME` to change where sandboxes are stored.
 
-To publish a new release, push a `v*` tag; the workflow checks Linux and macOS and uploads the installer and CLI as release assets.
+## Uninstall
+
+```sh
+curl -fsSL https://github.com/shravanngoswamii/gh-sandbox/releases/latest/download/uninstall.sh | sh
+```
+
+This removes `~/.local/bin/ghsb` and keeps your sandboxes. Run `ghsb destroy <name>` before uninstalling if you also want to remove their credentials. If you installed to a custom `GHSB_INSTALL_DIR`, set the same value when uninstalling.
+
+To publish a new release, push a `v*` tag; the workflow checks Linux and macOS and uploads the scripts and CLI as release assets.

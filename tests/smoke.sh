@@ -39,6 +39,7 @@ export PATH="$work/bin:$PATH"
 
 bash -n "$repo/ghsb"
 sh -n "$repo/install.sh"
+sh -n "$repo/uninstall.sh"
 GH_TOKEN=outer GH_ENTERPRISE_TOKEN=outer "$repo/ghsb" create work >/dev/null
 [ "$(cat "$GH_SANDBOX_HOME/work/token")" = browser-token ]
 [ "$(cat "$GH_SANDBOX_HOME/work/login")" = testuser ]
@@ -63,5 +64,8 @@ printf '%s  ghsb\n' "${digest%% *}" > "$work/ghsb.sha256"
 GHSB_INSTALL_DIR="$work/install" sh "$repo/install.sh" >/dev/null
 [ -x "$work/install/ghsb" ]
 "$work/install/ghsb" --help >/dev/null 2>&1
+GHSB_INSTALL_DIR="$work/install" sh "$repo/uninstall.sh" >/dev/null
+[ ! -e "$work/install/ghsb" ]
+[ -d "$GH_SANDBOX_HOME/work" ]
 
 printf 'smoke checks passed\n'

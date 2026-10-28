@@ -27,6 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: sha256sum ghsb > ghsb.sha256
-      - run: gh release create "$GITHUB_REF_NAME" ghsb install.sh ghsb.sha256 --verify-tag --generate-notes
+      - run: gh release create "$GITHUB_REF_NAME" ghsb install.sh uninstall.sh ghsb.sha256 --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
